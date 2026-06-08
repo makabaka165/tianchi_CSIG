@@ -1,0 +1,43 @@
+# Official competition datasets
+/Train/
+/Test_A/
+/Test_B/
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+
+# Model artifacts and generated predictions
+/checkpoints/
+/weights/
+/models/
+/outputs/
+/runs/
+/wandb/
+/tensorboard/
+/submission/
+/submissions/
+/predicted_masks/
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.safetensors
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
