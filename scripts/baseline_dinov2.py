@@ -36,6 +36,7 @@ from tqdm import tqdm
 
 Image.MAX_IMAGE_PIXELS = None
 VIEWS = range(5)
+GLOBAL_CLASS = "__global__"
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -49,6 +50,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--experiment-name", default="001_dinov2_vits14_patchcore_test_a")
     parser.add_argument("--model", default="dinov2_vits14")
     parser.add_argument("--image-size", type=int, default=448)
+    parser.add_argument("--image-sizes", default="", help="Comma-separated feature extraction sizes. Defaults to --image-size.")
+    parser.add_argument("--mask-size", type=int, default=448)
+    parser.add_argument("--scale-weights", default="", help="Comma-separated weights matching --image-sizes. Defaults to equal weights.")
+    parser.add_argument("--known-alpha", type=float, default=1.0, help="Blend class-specific score with global score for known classes.")
+    parser.add_argument("--global-fallback", action="store_true", help="Use global per-view stats when a test class has no train stats.")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--predict-batch-size", type=int, default=0, help="Defaults to --batch-size when 0.")
     parser.add_argument("--auto-batch", action="store_true", help="Probe candidate batch sizes and keep the largest one that fits.")
@@ -75,6 +81,30 @@ def parse_int_list(text: str) -> list[int]:
     if not values:
         raise ValueError("candidate list is empty")
     return values
+
+
+def parse_float_list(text: str) -> list[float]:
+    values = [float(part.strip()) for part in text.split(",") if part.strip()]
+    if not values:
+        raise ValueError("float list is empty")
+    return values
+
+
+def effective_image_sizes(args: argparse.Namespace) -> list[int]:
+    return parse_int_list(args.image_sizes) if args.image_sizes else [args.image_size]
+
+
+def normalized_scale_weights(args: argparse.Namespace, image_sizes: list[int]) -> list[float]:
+    if args.scale_weights:
+        weights = parse_float_list(args.scale_weights)
+        if len(weights) != len(image_sizes):
+            raise ValueError("--scale-weights length must match --image-sizes")
+    else:
+        weights = [1.0] * len(image_sizes)
+    total = sum(weights)
+    if total <= 0:
+        raise ValueError("--scale-weights must sum to a positive value")
+    return [w / total for w in weights]
 
 
 def class_dirs(root: Path) -> list[Path]:
@@ -184,11 +214,43 @@ def group_keys_from_items(items: list[tuple[str, str, int, Path]]) -> list[tuple
     return sorted({(cls_name, view) for cls_name, _sample, view, _path in items}, key=lambda x: (x[0].lower(), x[1]))
 
 
+def stats_group_keys_from_train_items(items: list[tuple[str, str, int, Path]]) -> list[tuple[str, int]]:
+    class_keys = group_keys_from_items(items)
+    global_keys = [(GLOBAL_CLASS, view) for view in VIEWS]
+    return class_keys + global_keys
+
+
 def group_ids_for_items(
     items: list[tuple[str, str, int, Path]],
     group_to_id: dict[tuple[str, int], int],
 ) -> torch.Tensor:
     return torch.tensor([group_to_id[(cls_name, view)] for cls_name, _sample, view, _path in items], dtype=torch.long)
+
+
+def group_ids_for_items_with_fallback(
+    items: list[tuple[str, str, int, Path]],
+    group_to_id: dict[tuple[str, int], int],
+    use_global_fallback: bool,
+) -> torch.Tensor:
+    group_ids = []
+    for cls_name, _sample, view, _path in items:
+        key = (cls_name, view)
+        if key in group_to_id:
+            group_ids.append(group_to_id[key])
+            continue
+        global_key = (GLOBAL_CLASS, view)
+        if use_global_fallback and global_key in group_to_id:
+            group_ids.append(group_to_id[global_key])
+            continue
+        raise KeyError(f"Missing stats for {cls_name} view {view}")
+    return torch.tensor(group_ids, dtype=torch.long)
+
+
+def global_group_ids_for_items(
+    items: list[tuple[str, str, int, Path]],
+    group_to_id: dict[tuple[str, int], int],
+) -> torch.Tensor:
+    return torch.tensor([group_to_id[(GLOBAL_CLASS, view)] for _cls_name, _sample, view, _path in items], dtype=torch.long)
 
 
 def build_stats(model: torch.nn.Module, device: torch.device, args: argparse.Namespace) -> dict[str, dict[int, dict[str, np.ndarray]]]:
@@ -197,9 +259,10 @@ def build_stats(model: torch.nn.Module, device: torch.device, args: argparse.Nam
         raise FileNotFoundError(f"No train images under {args.train_dir}")
     print(f"Extracting train features: {len(items)} images", flush=True)
 
-    group_keys = group_keys_from_items(items)
+    group_keys = stats_group_keys_from_train_items(items)
     group_to_id = {key: idx for idx, key in enumerate(group_keys)}
     group_ids_cpu = group_ids_for_items(items, group_to_id)
+    global_group_ids_cpu = global_group_ids_for_items(items, group_to_id)
     sums = None
     sums2 = None
     counts = torch.zeros(len(group_keys), dtype=torch.float32, device=device)
@@ -227,13 +290,17 @@ def build_stats(model: torch.nn.Module, device: torch.device, args: argparse.Nam
             sums2 = torch.zeros_like(sums)
             print(f"Patch tokens={patch_tokens}, feat_dim={feat_dim}", flush=True)
         batch_group_ids = group_ids_cpu[indices].to(device, non_blocking=True)
+        batch_global_group_ids = global_group_ids_cpu[indices].to(device, non_blocking=True)
         assert sums is not None and sums2 is not None
         sums.index_add_(0, batch_group_ids, tokens)
         sums2.index_add_(0, batch_group_ids, tokens * tokens)
         counts.index_add_(0, batch_group_ids, torch.ones_like(batch_group_ids, dtype=torch.float32, device=device))
+        sums.index_add_(0, batch_global_group_ids, tokens)
+        sums2.index_add_(0, batch_global_group_ids, tokens * tokens)
+        counts.index_add_(0, batch_global_group_ids, torch.ones_like(batch_global_group_ids, dtype=torch.float32, device=device))
         processed += int(indices.numel())
-    metrics = log_stage_speed("train_features", processed, stage_start)
-    args.runtime_metrics["train_features"] = metrics
+    metrics = log_stage_speed(f"train_features_{args.image_size}", processed, stage_start)
+    args.runtime_metrics.setdefault("train_features", {})[str(args.image_size)] = metrics
 
     stats: dict[str, dict[int, dict[str, np.ndarray]]] = {}
     assert sums is not None and sums2 is not None
@@ -250,7 +317,7 @@ def build_stats(model: torch.nn.Module, device: torch.device, args: argparse.Nam
             "std": stds_cpu[idx],
             "count": np.array(counts_cpu[idx], dtype=np.int32),
         }
-    args.runtime_metrics["train_peak_memory_mb"] = round(torch.cuda.max_memory_allocated(device) / 1024**2, 1)
+    args.runtime_metrics.setdefault("train_peak_memory_mb", {})[str(args.image_size)] = round(torch.cuda.max_memory_allocated(device) / 1024**2, 1)
     return stats
 
 
@@ -406,6 +473,131 @@ def predict(model: torch.nn.Module, device: torch.device, stats: dict[str, dict[
     return len(ordered_samples)
 
 
+def score_maps_for_batch(
+    tokens: torch.Tensor,
+    batch_group_ids: torch.Tensor,
+    batch_global_group_ids: torch.Tensor,
+    packed_means: torch.Tensor,
+    packed_stds: torch.Tensor,
+    patch_grid: int,
+    output_size: int,
+    args: argparse.Namespace,
+) -> torch.Tensor:
+    mean_tensor = packed_means[batch_group_ids]
+    std_tensor = packed_stds[batch_group_ids]
+    z = (tokens - mean_tensor) / std_tensor
+    patch_score = torch.sqrt(torch.mean(z * z, dim=-1))
+
+    if args.global_fallback and args.known_alpha < 0.999:
+        global_mean = packed_means[batch_global_group_ids]
+        global_std = packed_stds[batch_global_group_ids]
+        global_z = (tokens - global_mean) / global_std
+        global_score = torch.sqrt(torch.mean(global_z * global_z, dim=-1))
+        patch_score = args.known_alpha * patch_score + (1.0 - args.known_alpha) * global_score
+
+    patch_score = patch_score.reshape(-1, 1, patch_grid, patch_grid)
+    return F.interpolate(patch_score, size=(output_size, output_size), mode="bilinear", align_corners=False)[:, 0]
+
+
+def predict_multiscale(
+    model: torch.nn.Module,
+    device: torch.device,
+    scale_runs: list[dict[str, object]],
+    args: argparse.Namespace,
+) -> int:
+    items = list(iter_image_paths(args.test_dir))
+    items_by_sample: dict[tuple[str, str], list[int]] = {}
+    for idx, (cls_name, sample, _view, _path) in enumerate(items):
+        items_by_sample.setdefault((cls_name, sample), []).append(idx)
+    ordered_samples = sorted(items_by_sample, key=lambda x: (x[0].lower(), x[1]))
+    masks_root = args.output_dir / "predicted_masks"
+    csv_path = args.output_dir / "submission.csv"
+    score_accum = np.zeros((len(items), args.mask_size, args.mask_size), dtype=np.float32)
+    processed_by_scale: dict[str, dict[str, float | int]] = {}
+
+    print(
+        f"Predicting {len(ordered_samples)} samples / {len(items)} images across {len(scale_runs)} scale(s)",
+        flush=True,
+    )
+    for scale_run in scale_runs:
+        image_size = int(scale_run["image_size"])
+        scale_weight = float(scale_run["weight"])
+        stats = scale_run["stats"]
+        predict_batch_size = int(scale_run["predict_batch_size"])
+        patch_grid = image_size // 14
+        _stat_keys, stats_group_to_id, packed_means, packed_stds = stats_to_packed_device(stats, device)
+        predict_group_ids = group_ids_for_items_with_fallback(items, stats_group_to_id, args.global_fallback)
+        global_group_ids = global_group_ids_for_items(items, stats_group_to_id)
+        loader = make_loader(
+            items,
+            image_size,
+            predict_batch_size,
+            args.num_workers,
+            args.prefetch_factor,
+            device.type == "cuda",
+        )
+        stage_start = time.time()
+        processed = 0
+        for indices, images in tqdm(loader, desc=f"test_features_{image_size}"):
+            images = images.to(device, non_blocking=True)
+            tokens = extract_patch_tokens(model, images, args.amp)
+            batch_group_ids = predict_group_ids[indices].to(device, non_blocking=True)
+            batch_global_group_ids = global_group_ids[indices].to(device, non_blocking=True)
+            score_maps = score_maps_for_batch(
+                tokens,
+                batch_group_ids,
+                batch_global_group_ids,
+                packed_means,
+                packed_stds,
+                patch_grid,
+                args.mask_size,
+                args,
+            )
+            score_accum[indices.numpy()] += scale_weight * score_maps.detach().cpu().numpy()
+            processed += int(indices.numel())
+        processed_by_scale[str(image_size)] = log_stage_speed(f"test_features_{image_size}", processed, stage_start)
+        args.runtime_metrics.setdefault("predict_peak_memory_mb", {})[str(image_size)] = round(
+            torch.cuda.max_memory_allocated(device) / 1024**2,
+            1,
+        )
+
+    view_scores_by_sample: dict[tuple[str, str], list[float]] = {}
+    save_futures = []
+    post_start = time.time()
+    post_batch = max(1, min(args.predict_batch_size or args.batch_size, 128))
+    with ThreadPoolExecutor(max_workers=args.mask_workers) as executor:
+        for start in tqdm(range(0, len(items), post_batch), desc="postprocess_masks"):
+            end = min(start + post_batch, len(items))
+            score_tensor = torch.from_numpy(score_accum[start:end]).to(device, non_blocking=True)
+            view_scores = top_percent_mean_tensor(score_tensor, args.top_percent).detach().cpu().numpy()
+            masks = score_maps_to_uint8_masks(score_tensor, args.mask_high_percentile, args.percentile_mode)
+            for offset, (mask, score) in enumerate(zip(masks, view_scores)):
+                cls_name, sample, view, _path = items[start + offset]
+                view_scores_by_sample.setdefault((cls_name, sample), []).append(float(score))
+                save_futures.append(
+                    executor.submit(
+                        save_uint8_mask,
+                        mask,
+                        masks_root / cls_name / sample / f"{view}_mask.png",
+                        args.png_compress_level,
+                    )
+                )
+            while len(save_futures) > args.mask_workers * 8:
+                save_futures.pop(0).result()
+        for future in tqdm(save_futures, desc="save_masks"):
+            future.result()
+    args.runtime_metrics["test_features"] = processed_by_scale
+    args.runtime_metrics["postprocess_masks"] = log_stage_speed("postprocess_masks", len(items), post_start)
+
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["group_folder", "anomaly_score"])
+        for cls_name, sample in tqdm(ordered_samples, desc="write_csv"):
+            view_scores = view_scores_by_sample[(cls_name, sample)]
+            writer.writerow([f"{cls_name}/{sample}", f"{reduce_view_scores(view_scores, args.score_reducer):.8f}"])
+    return len(ordered_samples)
+
+
 def package_submission(output_dir: Path, package_dir: Path, experiment_name: str) -> Path:
     package_dir.mkdir(parents=True, exist_ok=True)
     local_zip = output_dir / "submission.zip"
@@ -425,23 +617,34 @@ def train_image_count(train_dir: Path) -> int:
     return sum(1 for _ in iter_image_paths(train_dir))
 
 
-def stats_cache_metadata(args: argparse.Namespace) -> dict[str, object]:
+def stats_cache_path(args: argparse.Namespace, image_size: int) -> Path:
+    path = args.stats_cache
+    sizes = effective_image_sizes(args)
+    if len(sizes) == 1:
+        return path
+    return path.with_name(f"{path.stem}_{args.model}_{image_size}{path.suffix}")
+
+
+def stats_cache_metadata(args: argparse.Namespace, image_size: int) -> dict[str, object]:
     return {
-        "version": 2,
+        "version": 3,
         "model": args.model,
-        "image_size": args.image_size,
+        "image_size": image_size,
+        "mask_size": args.mask_size,
         "eps": args.eps,
         "train_dir": str(args.train_dir),
         "train_image_count": train_image_count(args.train_dir),
+        "global_stats": True,
     }
 
 
-def load_stats_cache(args: argparse.Namespace) -> dict[str, dict[int, dict[str, np.ndarray]]] | None:
-    path = args.stats_cache
+def load_stats_cache(args: argparse.Namespace, image_size: int | None = None) -> dict[str, dict[int, dict[str, np.ndarray]]] | None:
+    image_size = args.image_size if image_size is None else image_size
+    path = stats_cache_path(args, image_size)
     if not args.cache_stats or not path or not path.exists():
         return None
     try:
-        expected = stats_cache_metadata(args)
+        expected = stats_cache_metadata(args, image_size)
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["meta_json"]))
             if meta != expected:
@@ -469,13 +672,14 @@ def load_stats_cache(args: argparse.Namespace) -> dict[str, dict[int, dict[str, 
         return None
 
 
-def save_stats_cache(stats: dict[str, dict[int, dict[str, np.ndarray]]], args: argparse.Namespace) -> None:
+def save_stats_cache(stats: dict[str, dict[int, dict[str, np.ndarray]]], args: argparse.Namespace, image_size: int | None = None) -> None:
     if not args.cache_stats or not args.stats_cache:
         return
-    path = args.stats_cache
+    image_size = args.image_size if image_size is None else image_size
+    path = stats_cache_path(args, image_size)
     path.parent.mkdir(parents=True, exist_ok=True)
     group_keys = stats_group_keys(stats)
-    meta = stats_cache_metadata(args)
+    meta = stats_cache_metadata(args, image_size)
     np.savez(
         path,
         meta_json=np.array(json.dumps(meta, sort_keys=True)),
@@ -593,7 +797,7 @@ def maybe_select_auto_batches(model: torch.nn.Module, device: torch.device, args
         predict_selected, predict_trials = select_largest_batch(
             model, device, args, probe_images, predict_candidates, "predict", fallback=128
         )
-        args.runtime_metrics["auto_batch_trials"] = {
+        args.runtime_metrics.setdefault("auto_batch_trials", {})[str(args.image_size)] = {
             "train": train_trials,
             "predict": predict_trials,
         }
@@ -601,8 +805,8 @@ def maybe_select_auto_batches(model: torch.nn.Module, device: torch.device, args
         torch.cuda.empty_cache()
     args.batch_size = train_selected
     args.predict_batch_size = predict_selected
-    args.runtime_metrics["selected_batch_size"] = train_selected
-    args.runtime_metrics["selected_predict_batch_size"] = predict_selected
+    args.runtime_metrics.setdefault("selected_batch_size", {})[str(args.image_size)] = train_selected
+    args.runtime_metrics.setdefault("selected_predict_batch_size", {})[str(args.image_size)] = predict_selected
     print(f"Selected batch sizes: train={train_selected}, predict={predict_selected}", flush=True)
 
 
@@ -623,6 +827,10 @@ def nvidia_smi() -> str:
 def run() -> int:
     args = parse_args()
     args.runtime_metrics = {"stats_cache_hit": False}
+    image_sizes = effective_image_sizes(args)
+    scale_weights = normalized_scale_weights(args, image_sizes)
+    if args.mask_size % 14 != 0:
+        print(f"Warning: mask_size={args.mask_size} is not divisible by 14; only output masks require 448x448.", flush=True)
     if args.output_dir.exists() and args.force:
         shutil.rmtree(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -630,6 +838,8 @@ def run() -> int:
 
     config = vars(args).copy()
     config.update({
+        "effective_image_sizes": image_sizes,
+        "normalized_scale_weights": scale_weights,
         "git_commit": git_commit(),
         "torch_version": torch.__version__,
         "torch_cuda": torch.version.cuda,
@@ -650,19 +860,76 @@ def run() -> int:
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
         model = load_model(args.model, device)
-        maybe_select_auto_batches(model, device, args)
+        original_batch_size = args.batch_size
+        original_predict_batch_size = args.predict_batch_size
+        scale_runs: list[dict[str, object]] = []
+        for image_size, scale_weight in zip(image_sizes, scale_weights):
+            print(f"--- preparing scale {image_size} weight={scale_weight:.4f} ---", flush=True)
+            args.image_size = image_size
+            args.batch_size = original_batch_size
+            args.predict_batch_size = original_predict_batch_size
+            maybe_select_auto_batches(model, device, args)
+            stats = load_stats_cache(args, image_size)
+            if stats is None:
+                try:
+                    torch.cuda.reset_peak_memory_stats(device)
+                    stats = build_stats(model, device, args)
+                    save_stats_cache(stats, args, image_size)
+                except Exception as exc:
+                    torch.cuda.empty_cache()
+                    if is_cuda_oom(exc) and image_size != image_sizes[0]:
+                        msg = f"Skipping scale {image_size} after CUDA OOM: {str(exc).splitlines()[0][:240]}"
+                        print(msg, flush=True)
+                        args.runtime_metrics.setdefault("skipped_scales", []).append({"image_size": image_size, "reason": msg})
+                        continue
+                    raise
+            scale_runs.append({
+                "image_size": image_size,
+                "weight": scale_weight,
+                "stats": stats,
+                "batch_size": args.batch_size,
+                "predict_batch_size": args.predict_batch_size or args.batch_size,
+            })
+        if not scale_runs:
+            raise RuntimeError("No usable scales were prepared.")
+        prepared_weight_sum = sum(float(scale_run["weight"]) for scale_run in scale_runs)
+        for scale_run in scale_runs:
+            scale_run["weight"] = float(scale_run["weight"]) / prepared_weight_sum
         config.update({
             "selected_batch_size": args.runtime_metrics["selected_batch_size"],
             "selected_predict_batch_size": args.runtime_metrics["selected_predict_batch_size"],
+            "prepared_scales": [
+                {
+                    "image_size": int(scale_run["image_size"]),
+                    "weight": float(scale_run["weight"]),
+                    "batch_size": int(scale_run["batch_size"]),
+                    "predict_batch_size": int(scale_run["predict_batch_size"]),
+                }
+                for scale_run in scale_runs
+            ],
         })
         print("--- selected runtime config ---", flush=True)
         print(json.dumps(config, indent=2, default=str), flush=True)
-        stats = load_stats_cache(args)
-        if stats is None:
-            torch.cuda.reset_peak_memory_stats(device)
-            stats = build_stats(model, device, args)
-            save_stats_cache(stats, args)
-        total = predict(model, device, stats, args)
+        try:
+            total = predict_multiscale(model, device, scale_runs, args)
+        except Exception as exc:
+            torch.cuda.empty_cache()
+            if is_cuda_oom(exc) and len(scale_runs) > 1:
+                fallback_scales = [scale_runs[0]]
+                args.runtime_metrics["predict_fallback"] = f"Retrying with scale {fallback_scales[0]['image_size']} only after OOM: {str(exc).splitlines()[0][:240]}"
+                print(args.runtime_metrics["predict_fallback"], flush=True)
+                shutil.rmtree(args.output_dir / "predicted_masks", ignore_errors=True)
+                total = predict_multiscale(model, device, fallback_scales, args)
+                config["prepared_scales"] = [
+                    {
+                        "image_size": int(fallback_scales[0]["image_size"]),
+                        "weight": 1.0,
+                        "batch_size": int(fallback_scales[0]["batch_size"]),
+                        "predict_batch_size": int(fallback_scales[0]["predict_batch_size"]),
+                    }
+                ]
+            else:
+                raise
         package_zip = package_submission(args.output_dir, args.package_dir, args.experiment_name)
         config.update({
             "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
