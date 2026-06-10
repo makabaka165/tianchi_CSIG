@@ -34,3 +34,12 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 - Proxy checks: 750 finite scores, 3750 readable masks, no all-black masks, zip contained 3751 entries. Score correlation with 002 was about `0.978`, so the model changed ranking while staying stable.
 - Lesson: larger DINOv2 capacity plus multiscale features improved the public score; next useful direction is a stronger backbone and safe fusion with 003.
 
+## 004_dinov2_vitl14_vitb_fusion_test_a
+
+- Status: planned/running.
+- Core idea: use public DINOv2 ViT-L/14 with larger multiscale features, then fuse the raw ViT-L submission with the proven 003 ViT-B/14 submission.
+- Planned raw package: `results/_packages/004_dinov2_vitl14_multiscale_raw_test_a.zip`
+- Planned fused package: `results/_packages/004_dinov2_vitl14_vitb_fusion_test_a.zip`
+- Key parameters: `--model dinov2_vitl14`, `--image-sizes 448,518,672`, `--scale-weights 0.35,0.35,0.30`, `--global-fallback`, bf16 AMP, exact percentile mode, auto batch candidates `8,12,16,24,32,40,48,64,80,96`.
+- Fusion idea: class-rank fuse image scores and uint8-weighted fuse masks with default weights `0.6 * ViT-L + 0.4 * 003`.
+- Implementation notes: add configurable auto-batch fallbacks for large models and make prediction OOM fallback drop the largest scale first.

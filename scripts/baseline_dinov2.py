@@ -60,6 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auto-batch", action="store_true", help="Probe candidate batch sizes and keep the largest one that fits.")
     parser.add_argument("--batch-candidates", default="128,192,256,320,384,448,512,640,768")
     parser.add_argument("--predict-batch-candidates", default="128,192,256,320,384,448,512,640,768")
+    parser.add_argument("--auto-batch-fallback", type=int, default=96, help="Train batch size used if every auto-batch candidate OOMs.")
+    parser.add_argument("--auto-predict-batch-fallback", type=int, default=128, help="Predict batch size used if every auto-batch candidate OOMs.")
     parser.add_argument("--num-workers", type=int, default=16)
     parser.add_argument("--prefetch-factor", type=int, default=4)
     parser.add_argument("--mask-workers", type=int, default=16)
@@ -613,6 +615,62 @@ def package_submission(output_dir: Path, package_dir: Path, experiment_name: str
     return package_zip
 
 
+def normalize_scale_run_weights(scale_runs: list[dict[str, object]]) -> None:
+    weight_sum = sum(float(scale_run["weight"]) for scale_run in scale_runs)
+    if weight_sum <= 0:
+        raise ValueError("Scale weights must sum to a positive value.")
+    for scale_run in scale_runs:
+        scale_run["weight"] = float(scale_run["weight"]) / weight_sum
+
+
+def prepared_scales_config(scale_runs: list[dict[str, object]]) -> list[dict[str, int | float]]:
+    return [
+        {
+            "image_size": int(scale_run["image_size"]),
+            "weight": float(scale_run["weight"]),
+            "batch_size": int(scale_run["batch_size"]),
+            "predict_batch_size": int(scale_run["predict_batch_size"]),
+        }
+        for scale_run in scale_runs
+    ]
+
+
+def predict_with_oom_scale_fallback(
+    model: torch.nn.Module,
+    device: torch.device,
+    scale_runs: list[dict[str, object]],
+    args: argparse.Namespace,
+) -> tuple[int, list[dict[str, object]]]:
+    active_scales = list(scale_runs)
+    while True:
+        try:
+            return predict_multiscale(model, device, active_scales, args), active_scales
+        except Exception as exc:
+            torch.cuda.empty_cache()
+            if not is_cuda_oom(exc) or len(active_scales) <= 1:
+                raise
+            dropped = max(active_scales, key=lambda scale_run: int(scale_run["image_size"]))
+            active_scales = [scale_run for scale_run in active_scales if scale_run is not dropped]
+            normalize_scale_run_weights(active_scales)
+            msg = (
+                f"Dropped scale {dropped['image_size']} after prediction CUDA OOM; "
+                f"retrying with {[int(scale_run['image_size']) for scale_run in active_scales]}: "
+                f"{str(exc).splitlines()[0][:240]}"
+            )
+            print(msg, flush=True)
+            args.runtime_metrics.setdefault("predict_fallbacks", []).append(
+                {
+                    "dropped_image_size": int(dropped["image_size"]),
+                    "remaining_image_sizes": [int(scale_run["image_size"]) for scale_run in active_scales],
+                    "reason": msg,
+                }
+            )
+            shutil.rmtree(args.output_dir / "predicted_masks", ignore_errors=True)
+            csv_path = args.output_dir / "submission.csv"
+            if csv_path.exists():
+                csv_path.unlink()
+
+
 def train_image_count(train_dir: Path) -> int:
     return sum(1 for _ in iter_image_paths(train_dir))
 
@@ -792,10 +850,10 @@ def maybe_select_auto_batches(model: torch.nn.Module, device: torch.device, args
         print(f"Loading {max_probe} real images for auto-batch probing", flush=True)
         probe_images = load_probe_images(args, max_probe)
         train_selected, train_trials = select_largest_batch(
-            model, device, args, probe_images, train_candidates, "train", fallback=96
+            model, device, args, probe_images, train_candidates, "train", fallback=args.auto_batch_fallback
         )
         predict_selected, predict_trials = select_largest_batch(
-            model, device, args, probe_images, predict_candidates, "predict", fallback=128
+            model, device, args, probe_images, predict_candidates, "predict", fallback=args.auto_predict_batch_fallback
         )
         args.runtime_metrics.setdefault("auto_batch_trials", {})[str(args.image_size)] = {
             "train": train_trials,
@@ -892,44 +950,16 @@ def run() -> int:
             })
         if not scale_runs:
             raise RuntimeError("No usable scales were prepared.")
-        prepared_weight_sum = sum(float(scale_run["weight"]) for scale_run in scale_runs)
-        for scale_run in scale_runs:
-            scale_run["weight"] = float(scale_run["weight"]) / prepared_weight_sum
+        normalize_scale_run_weights(scale_runs)
         config.update({
             "selected_batch_size": args.runtime_metrics["selected_batch_size"],
             "selected_predict_batch_size": args.runtime_metrics["selected_predict_batch_size"],
-            "prepared_scales": [
-                {
-                    "image_size": int(scale_run["image_size"]),
-                    "weight": float(scale_run["weight"]),
-                    "batch_size": int(scale_run["batch_size"]),
-                    "predict_batch_size": int(scale_run["predict_batch_size"]),
-                }
-                for scale_run in scale_runs
-            ],
+            "prepared_scales": prepared_scales_config(scale_runs),
         })
         print("--- selected runtime config ---", flush=True)
         print(json.dumps(config, indent=2, default=str), flush=True)
-        try:
-            total = predict_multiscale(model, device, scale_runs, args)
-        except Exception as exc:
-            torch.cuda.empty_cache()
-            if is_cuda_oom(exc) and len(scale_runs) > 1:
-                fallback_scales = [scale_runs[0]]
-                args.runtime_metrics["predict_fallback"] = f"Retrying with scale {fallback_scales[0]['image_size']} only after OOM: {str(exc).splitlines()[0][:240]}"
-                print(args.runtime_metrics["predict_fallback"], flush=True)
-                shutil.rmtree(args.output_dir / "predicted_masks", ignore_errors=True)
-                total = predict_multiscale(model, device, fallback_scales, args)
-                config["prepared_scales"] = [
-                    {
-                        "image_size": int(fallback_scales[0]["image_size"]),
-                        "weight": 1.0,
-                        "batch_size": int(fallback_scales[0]["batch_size"]),
-                        "predict_batch_size": int(fallback_scales[0]["predict_batch_size"]),
-                    }
-                ]
-            else:
-                raise
+        total, used_scale_runs = predict_with_oom_scale_fallback(model, device, scale_runs, args)
+        config["prepared_scales"] = prepared_scales_config(used_scale_runs)
         package_zip = package_submission(args.output_dir, args.package_dir, args.experiment_name)
         config.update({
             "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
