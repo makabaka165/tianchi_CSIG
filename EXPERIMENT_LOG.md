@@ -1,0 +1,36 @@
+# Experiment Log
+
+This file records the key ideas, commands, outputs, and leaderboard feedback for each effective submission. Keep entries short but complete enough to resume work quickly.
+
+## 001_dinov2_vits14_patchcore_test_a
+
+- Official score: `58.9440`
+- Commit context: initial GPU DINOv2 baseline.
+- Submission package: `results/_packages/001_dinov2_vits14_patchcore_test_a.zip`
+- Core idea: use official DINOv2 ViT-S/14 public weights to extract Train normal patch tokens, build per-class/per-view normal mean and std prototypes, then score Test_A patches by normalized distance.
+- Key parameters: single scale `448`, output mask `448x448`, image score by max over 5 views, mask from per-image score-map percentile normalization.
+- Validation: `check_submission.py` passed with 750 CSV rows and 3750 masks.
+- Lesson: the simple foundation-model prototype baseline is valid and gives the first usable score.
+
+## 002_dinov2_vits14_autobatch_test_a
+
+- Official score: `58.9442`
+- Commit: `99fc165 Add optimized DINOv2 baseline pipeline`
+- Submission package: `results/_packages/002_dinov2_vits14_autobatch_test_a.zip`
+- Core idea: keep ViT-S/14 but remove speed bottlenecks with auto batch probing, GPU vectorized stats accumulation, GPU postprocessing, and stats cache.
+- Key parameters: single scale `448`, `--auto-batch`, selected train/predict batch `256`, bf16 AMP, cached stats, fast percentile mode.
+- Runtime: about `76.539s`, peak allocated/reserved CUDA memory about `5901MB / 8354MB`.
+- Validation: format and zip checks passed; score nearly identical to 001 but much faster.
+- Lesson: speed/GPU utilization improved, but the model capacity and feature scale were still the limiting factors.
+
+## 003_dinov2_vitb14_multiscale_test_a
+
+- Official score: `59.1242`
+- Commit: `ade5c51 Add ViT-B multiscale anomaly baseline`
+- Submission package: `results/_packages/003_dinov2_vitb14_multiscale_test_a.zip`
+- Core idea: switch to public DINOv2 ViT-B/14, add `448` and `518` feature scales, keep output masks at `448x448`, and add global per-view fallback stats for unseen B-list classes.
+- Key parameters: `--model dinov2_vitb14`, `--image-sizes 448,518`, `--scale-weights 0.5,0.5`, `--global-fallback`, bf16 AMP, exact percentile mode, auto batch.
+- Runtime: about `306.562s`; selected train/predict batch `160` for both scales; peak allocated/reserved CUDA memory about `8303.6MB / 11278.0MB`.
+- Proxy checks: 750 finite scores, 3750 readable masks, no all-black masks, zip contained 3751 entries. Score correlation with 002 was about `0.978`, so the model changed ranking while staying stable.
+- Lesson: larger DINOv2 capacity plus multiscale features improved the public score; next useful direction is a stronger backbone and safe fusion with 003.
+

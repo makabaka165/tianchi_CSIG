@@ -20,6 +20,7 @@
 /tensorboard/
 /submission/
 /submissions/
+/提交结果/
 /predicted_masks/
 *.ckpt
 *.pth
