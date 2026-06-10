@@ -51,9 +51,15 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 005_dinov2_vitl14_memorybank_fusion_test_a
 
-- Status: planned/running.
+- Official score: pending platform submission.
+- Commit: `0b92b63 Add ViT-L memory bank anomaly pipeline`
 - Core idea: add a ViT-L/14 multiscale MemoryBank/PatchCore branch using nearest normal patch distance, then fuse it with the strongest 004 fused package.
-- Planned raw package: `results/_packages/005_dinov2_vitl14_memorybank_test_a.zip`
-- Planned fused package: `results/_packages/005_dinov2_vitl14_memorybank_fusion_test_a.zip`
+- Raw package: `results/_packages/005_dinov2_vitl14_memorybank_test_a.zip`
+- Fused package: `results/_packages/005_dinov2_vitl14_memorybank_fusion_test_a.zip`
 - Key parameters: `--model dinov2_vitl14`, `--image-sizes 448,518,672`, `--scale-weights 0.25,0.35,0.40`, class/view bank `4096`, global/view bank `32768`, bf16 AMP, GPU chunked cosine nearest-neighbor scoring.
-- Fusion idea: score weights `0.35 * memorybank + 0.65 * 004_fused`, mask weights `0.60 * memorybank + 0.40 * 004_fused`, class-rank score mode.
+- Fusion: class-rank score weights `0.35 * memorybank + 0.65 * 004_fused`; mask weights `0.60 * memorybank + 0.40 * 004_fused`.
+- Runtime: raw MemoryBank took about `1351.260s`; selected train/predict batch `96` for all three scales; no scale fallback; peak allocated/reserved CUDA memory about `11545.4MB / 15260.0MB`, with live `nvidia-smi` sampling up to about `15.8GB` and `100%` GPU utilization during 672 KNN.
+- Validation: raw and fused both passed `check_submission.py`; both zips contain 3751 entries, 3750 masks, and remote/local CRC checks passed.
+- Proxy checks: 750 finite scores, no NaN/Inf, 3750 readable `448x448` masks, and no all-black masks. Raw MemoryBank score correlation with 004 fused is about `0.631`, so it is more complementary than prior ViT-L prototype scores; fused score correlation with 004 fused is about `0.958`.
+- Delivery: recommended submit file is `005_dinov2_vitl14_memorybank_fusion_test_a.zip`; raw MemoryBank zip is retained as backup.
+- Lesson: nearest-neighbor patch banks create a genuinely different ranking signal and sharper mask prior, but the branch is much slower and cache-heavy; future iterations can tune fusion weights or reduce cache overhead without changing the generated 005 package.
