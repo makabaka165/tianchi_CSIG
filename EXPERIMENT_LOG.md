@@ -36,10 +36,15 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 004_dinov2_vitl14_vitb_fusion_test_a
 
-- Status: planned/running.
+- Official score: pending platform submission.
+- Commit: `86ed1c2 Add ViT-L fusion experiment pipeline`
 - Core idea: use public DINOv2 ViT-L/14 with larger multiscale features, then fuse the raw ViT-L submission with the proven 003 ViT-B/14 submission.
-- Planned raw package: `results/_packages/004_dinov2_vitl14_multiscale_raw_test_a.zip`
-- Planned fused package: `results/_packages/004_dinov2_vitl14_vitb_fusion_test_a.zip`
+- Raw package: `results/_packages/004_dinov2_vitl14_multiscale_raw_test_a.zip`
+- Fused package: `results/_packages/004_dinov2_vitl14_vitb_fusion_test_a.zip`
 - Key parameters: `--model dinov2_vitl14`, `--image-sizes 448,518,672`, `--scale-weights 0.35,0.35,0.30`, `--global-fallback`, bf16 AMP, exact percentile mode, auto batch candidates `8,12,16,24,32,40,48,64,80,96`.
-- Fusion idea: class-rank fuse image scores and uint8-weighted fuse masks with default weights `0.6 * ViT-L + 0.4 * 003`.
-- Implementation notes: add configurable auto-batch fallbacks for large models and make prediction OOM fallback drop the largest scale first.
+- Fusion: class-rank fuse image scores and uint8-weighted fuse masks with weights `0.6 * ViT-L + 0.4 * 003`.
+- Runtime: raw ViT-L took about `795.145s`; selected train/predict batch `96` for all three scales; peak allocated/reserved CUDA memory about `15059.1MB / 17296.0MB`.
+- Validation: raw and fused both passed `check_submission.py`; both zips contain 3751 entries, 3750 masks, and local/remote CRC checks passed.
+- Proxy checks: raw/fused both have 750 finite scores, no NaN/Inf, 3750 readable `448x448` masks, and no all-black masks. Fused mask mean sits between raw ViT-L and 003, as expected.
+- Delivery: recommended submit file is `004_dinov2_vitl14_vitb_fusion_test_a.zip`; raw ViT-L zip is retained as backup.
+- Lesson: ViT-L/14 three-scale features run comfortably on the 4090 with much higher memory use than 003, but output scores are highly correlated with 003 (`~0.989` raw vs 003), so fusion is the safer first submission.
