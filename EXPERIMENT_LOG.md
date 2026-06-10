@@ -36,7 +36,7 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 004_dinov2_vitl14_vitb_fusion_test_a
 
-- Official score: pending platform submission.
+- Official score: fused `59.7794`, raw `59.2690`.
 - Commit: `86ed1c2 Add ViT-L fusion experiment pipeline`
 - Core idea: use public DINOv2 ViT-L/14 with larger multiscale features, then fuse the raw ViT-L submission with the proven 003 ViT-B/14 submission.
 - Raw package: `results/_packages/004_dinov2_vitl14_multiscale_raw_test_a.zip`
@@ -48,3 +48,12 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 - Proxy checks: raw/fused both have 750 finite scores, no NaN/Inf, 3750 readable `448x448` masks, and no all-black masks. Fused mask mean sits between raw ViT-L and 003, as expected.
 - Delivery: recommended submit file is `004_dinov2_vitl14_vitb_fusion_test_a.zip`; raw ViT-L zip is retained as backup.
 - Lesson: ViT-L/14 three-scale features run comfortably on the 4090 with much higher memory use than 003, but output scores are highly correlated with 003 (`~0.989` raw vs 003), so fusion is the safer first submission.
+
+## 005_dinov2_vitl14_memorybank_fusion_test_a
+
+- Status: planned/running.
+- Core idea: add a ViT-L/14 multiscale MemoryBank/PatchCore branch using nearest normal patch distance, then fuse it with the strongest 004 fused package.
+- Planned raw package: `results/_packages/005_dinov2_vitl14_memorybank_test_a.zip`
+- Planned fused package: `results/_packages/005_dinov2_vitl14_memorybank_fusion_test_a.zip`
+- Key parameters: `--model dinov2_vitl14`, `--image-sizes 448,518,672`, `--scale-weights 0.25,0.35,0.40`, class/view bank `4096`, global/view bank `32768`, bf16 AMP, GPU chunked cosine nearest-neighbor scoring.
+- Fusion idea: score weights `0.35 * memorybank + 0.65 * 004_fused`, mask weights `0.60 * memorybank + 0.40 * 004_fused`, class-rank score mode.

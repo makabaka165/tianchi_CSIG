@@ -29,6 +29,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--experiment-name", default="")
     parser.add_argument("--primary-weight", type=float, default=0.6)
     parser.add_argument("--reference-weight", type=float, default=0.4)
+    parser.add_argument("--score-primary-weight", type=float, default=None)
+    parser.add_argument("--score-reference-weight", type=float, default=None)
+    parser.add_argument("--mask-primary-weight", type=float, default=None)
+    parser.add_argument("--mask-reference-weight", type=float, default=None)
     parser.add_argument("--score-mode", choices=("class_rank", "global_rank", "raw"), default="class_rank")
     parser.add_argument("--png-compress-level", type=int, default=1)
     parser.add_argument("--force", action="store_true")
@@ -190,7 +194,14 @@ def package_submission(output_dir: Path, package_dir: Path, experiment_name: str
 def run() -> int:
     args = parse_args()
     experiment_name = args.experiment_name or args.output_dir.name
-    primary_weight, reference_weight = normalized_weights(args.primary_weight, args.reference_weight)
+    score_primary_weight, score_reference_weight = normalized_weights(
+        args.score_primary_weight if args.score_primary_weight is not None else args.primary_weight,
+        args.score_reference_weight if args.score_reference_weight is not None else args.reference_weight,
+    )
+    mask_primary_weight, mask_reference_weight = normalized_weights(
+        args.mask_primary_weight if args.mask_primary_weight is not None else args.primary_weight,
+        args.mask_reference_weight if args.mask_reference_weight is not None else args.reference_weight,
+    )
     if args.output_dir.exists() and args.force:
         shutil.rmtree(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -202,8 +213,12 @@ def run() -> int:
         "reference_dir": str(args.reference_dir),
         "output_dir": str(args.output_dir),
         "package_dir": str(args.package_dir),
-        "primary_weight": primary_weight,
-        "reference_weight": reference_weight,
+        "primary_weight": args.primary_weight,
+        "reference_weight": args.reference_weight,
+        "score_primary_weight": score_primary_weight,
+        "score_reference_weight": score_reference_weight,
+        "mask_primary_weight": mask_primary_weight,
+        "mask_reference_weight": mask_reference_weight,
         "score_mode": args.score_mode,
         "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -217,7 +232,7 @@ def run() -> int:
         primary_transformed = transform_scores(primary_order, primary_scores, args.score_mode)
         reference_transformed = transform_scores(reference_order, reference_scores, args.score_mode)
         fused_scores = {
-            group: primary_weight * primary_transformed[group] + reference_weight * reference_transformed[group]
+            group: score_primary_weight * primary_transformed[group] + score_reference_weight * reference_transformed[group]
             for group in primary_order
         }
         write_submission(args.output_dir / "submission.csv", primary_order, fused_scores)
@@ -225,8 +240,8 @@ def run() -> int:
             args.primary_dir,
             args.reference_dir,
             args.output_dir,
-            primary_weight,
-            reference_weight,
+            mask_primary_weight,
+            mask_reference_weight,
             args.png_compress_level,
         )
         package_zip = package_submission(args.output_dir, args.package_dir, experiment_name)
