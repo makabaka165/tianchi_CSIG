@@ -41,9 +41,9 @@ from baseline_dinov2 import (
     package_submission,
     parse_float_list,
     parse_int_list,
+    percentile_values,
     reduce_view_scores,
     save_uint8_mask,
-    score_maps_to_uint8_masks,
     top_percent_mean_tensor,
 )
 
@@ -136,13 +136,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp", choices=("none", "fp16", "bf16"), default="bf16")
     parser.add_argument("--percentile-mode", choices=("fast", "exact"), default="exact")
     parser.add_argument("--top-percent", type=float, default=1.0)
+    parser.add_argument("--mask-low-percentile", type=float, default=50.0)
     parser.add_argument("--mask-high-percentile", type=float, default=99.5)
     parser.add_argument("--score-reducer", choices=("max", "mean_top2", "mean"), default="max")
     parser.add_argument("--bank-samples-per-group", type=int, default=4096)
     parser.add_argument("--global-bank-samples-per-view", type=int, default=32768)
     parser.add_argument("--knn-chunk-tokens", type=int, default=8192)
+    parser.add_argument("--knn-neighbors", type=int, default=1)
+    parser.add_argument("--knn-reducer", choices=("nearest", "mean_topk", "kth"), default="nearest")
     parser.add_argument("--memory-cache", type=Path, default=Path("results/_cache/dinov2_vitl14_memorybank.npz"))
     parser.add_argument("--cache-memory", action="store_true")
+    parser.add_argument("--save-score-maps", action="store_true")
+    parser.add_argument("--score-map-cache", type=Path, default=Path("results/_cache/dinov2_vitl14_memorybank_score_maps.npz"))
     parser.add_argument("--debug-train-classes", type=int, default=0)
     parser.add_argument("--debug-train-samples-per-class", type=int, default=0)
     parser.add_argument("--debug-test-classes", type=int, default=0)
@@ -432,16 +437,30 @@ def nearest_neighbor_distance(
     queries: torch.Tensor,
     bank: torch.Tensor,
     chunk_tokens: int,
+    neighbors: int,
+    reducer: str,
 ) -> torch.Tensor:
     if bank.numel() == 0:
         raise RuntimeError("Selected MemoryBank is empty.")
+    if neighbors <= 0:
+        raise ValueError("--knn-neighbors must be positive.")
     distances = torch.empty(queries.shape[0], dtype=torch.float32, device=queries.device)
     bank_t = bank.transpose(0, 1).contiguous()
+    topk = max(1, min(int(neighbors), int(bank.shape[0])))
     for start in range(0, queries.shape[0], chunk_tokens):
         end = min(start + chunk_tokens, queries.shape[0])
         sims = queries[start:end].to(bank.dtype) @ bank_t
-        max_sim = sims.max(dim=1).values.float()
-        distances[start:end] = torch.clamp(1.0 - max_sim, min=0.0, max=2.0)
+        if reducer == "nearest" or topk == 1:
+            selected_sim = sims.max(dim=1).values.float()
+        else:
+            top_values = torch.topk(sims, topk, dim=1).values.float()
+            if reducer == "mean_topk":
+                selected_sim = top_values.mean(dim=1)
+            elif reducer == "kth":
+                selected_sim = top_values[:, -1]
+            else:
+                raise ValueError(f"Unsupported --knn-reducer: {reducer}")
+        distances[start:end] = torch.clamp(1.0 - selected_sim, min=0.0, max=2.0)
     return distances
 
 
@@ -486,9 +505,64 @@ def score_batch_with_bank(
         else:
             start, end = group_slices(bank.global_offsets, group_index)
             selected_bank = global_banks_gpu[start:end]
-        distances = nearest_neighbor_distance(query, selected_bank, args.knn_chunk_tokens)
+        distances = nearest_neighbor_distance(
+            query,
+            selected_bank,
+            args.knn_chunk_tokens,
+            args.knn_neighbors,
+            args.knn_reducer,
+        )
         patch_scores.index_copy_(0, row_tensor, distances.reshape(len(rows), patch_tokens))
     return patch_scores
+
+
+def score_maps_to_uint8_masks_custom(
+    score_maps: torch.Tensor,
+    low_percentile: float,
+    high_percentile: float,
+    percentile_mode: str,
+) -> np.ndarray:
+    flat = score_maps.flatten(1).float()
+    lo = percentile_values(flat, low_percentile, percentile_mode).view(-1, 1, 1)
+    hi = percentile_values(flat, high_percentile, percentile_mode).view(-1, 1, 1)
+    max_values = flat.max(dim=1).values.view(-1, 1, 1)
+    hi = torch.where(torch.isfinite(hi) & (hi > lo + 1e-6), hi, max_values)
+    valid = hi > lo + 1e-6
+    masks = torch.where(valid, torch.clamp((score_maps - lo) / (hi - lo), 0.0, 1.0), torch.zeros_like(score_maps))
+    return (masks * 255.0).to(torch.uint8).cpu().numpy()
+
+
+def save_score_map_cache(
+    score_accum: np.ndarray,
+    items: list[tuple[str, str, int, Path]],
+    args: argparse.Namespace,
+    used_scales: list[dict[str, object]],
+) -> None:
+    if not args.save_score_maps:
+        return
+    path = args.score_map_cache
+    path.parent.mkdir(parents=True, exist_ok=True)
+    meta = {
+        "version": 1,
+        "experiment_name": args.experiment_name,
+        "model": args.model,
+        "mask_size": args.mask_size,
+        "image_sizes": effective_image_sizes(args),
+        "used_scales": used_scales,
+        "score_dtype": "float16",
+        "item_count": len(items),
+    }
+    np.savez(
+        path,
+        meta_json=np.array(json.dumps(meta, sort_keys=True)),
+        classes=np.array([cls_name for cls_name, _sample, _view, _path in items]),
+        samples=np.array([sample for _cls_name, sample, _view, _path in items]),
+        views=np.array([view for _cls_name, _sample, view, _path in items], dtype=np.int32),
+        score_maps=score_accum.astype(np.float16, copy=False),
+    )
+    args.runtime_metrics["score_map_cache_path"] = str(path)
+    args.runtime_metrics["score_map_cache_mb"] = round(path.stat().st_size / 1024**2, 1)
+    print(f"Saved score map cache: {path}", flush=True)
 
 
 def predict_scale_scores(
@@ -571,7 +645,12 @@ def postprocess_submission(
             end = min(start + post_batch, len(items))
             score_tensor = torch.from_numpy(score_accum[start:end]).to(device, non_blocking=True)
             view_scores = top_percent_mean_tensor(score_tensor, args.top_percent).detach().cpu().numpy()
-            masks = score_maps_to_uint8_masks(score_tensor, args.mask_high_percentile, args.percentile_mode)
+            masks = score_maps_to_uint8_masks_custom(
+                score_tensor,
+                args.mask_low_percentile,
+                args.mask_high_percentile,
+                args.percentile_mode,
+            )
             for offset, (mask, score) in enumerate(zip(masks, view_scores)):
                 cls_name, sample, view, _path = items[start + offset]
                 view_scores_by_sample.setdefault((cls_name, sample), []).append(float(score))
@@ -704,6 +783,7 @@ def run() -> int:
             for scale_run in used_scales:
                 scale_run["weight"] = float(scale_run["weight"]) / used_weight_sum
 
+        save_score_map_cache(score_accum, test, args, used_scales)
         total = postprocess_submission(score_accum, test, args, device)
         package_zip = package_submission(args.output_dir, args.package_dir, args.experiment_name)
         config.update(

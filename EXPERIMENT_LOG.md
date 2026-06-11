@@ -51,7 +51,7 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 005_dinov2_vitl14_memorybank_fusion_test_a
 
-- Official score: pending platform submission.
+- Official score: fused `69.1309`; raw not submitted.
 - Commit: `0b92b63 Add ViT-L memory bank anomaly pipeline`
 - Core idea: add a ViT-L/14 multiscale MemoryBank/PatchCore branch using nearest normal patch distance, then fuse it with the strongest 004 fused package.
 - Raw package: `results/_packages/005_dinov2_vitl14_memorybank_test_a.zip`
@@ -63,3 +63,11 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 - Proxy checks: 750 finite scores, no NaN/Inf, 3750 readable `448x448` masks, and no all-black masks. Raw MemoryBank score correlation with 004 fused is about `0.631`, so it is more complementary than prior ViT-L prototype scores; fused score correlation with 004 fused is about `0.958`.
 - Delivery: recommended submit file is `005_dinov2_vitl14_memorybank_fusion_test_a.zip`; raw MemoryBank zip is retained as backup.
 - Lesson: nearest-neighbor patch banks create a genuinely different ranking signal and sharper mask prior, but the branch is much slower and cache-heavy; future iterations can tune fusion weights or reduce cache overhead without changing the generated 005 package.
+
+## 006_dinov2_vitl14_memorybank_v2_fusion_test_a
+
+- Status: planned/running.
+- Core idea: keep the high-scoring 005 fused package as the anchor, then test a stronger MemoryBank v2 with higher resolution, larger banks, and top-k nearest-neighbor scoring.
+- Planned packages: `results/_packages/006a_existing_memorybank_mask75_fusion_test_a.zip`, `results/_packages/006_dinov2_vitl14_memorybank_v2_test_a.zip`, and `results/_packages/006_dinov2_vitl14_memorybank_v2_fusion_test_a.zip`.
+- Key parameters: `--model dinov2_vitl14`, `--image-sizes 518,672,784`, `--scale-weights 0.25,0.35,0.40`, class/view bank `8192`, global/view bank `65536`, `--knn-neighbors 3`, `--knn-reducer mean_topk`, `--mask-low-percentile 70`, `--mask-high-percentile 99.7`.
+- Fusion idea: 006a reuses 005 raw with heavier MemoryBank mask weight; final 006 fuses 006 raw v2 with 005 fused using score weights `0.25 * 006_v2 + 0.75 * 005_fused` and mask weights `0.65 * 006_v2 + 0.35 * 005_fused`.
