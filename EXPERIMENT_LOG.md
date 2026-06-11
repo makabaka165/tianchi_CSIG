@@ -66,8 +66,17 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 006_dinov2_vitl14_memorybank_v2_fusion_test_a
 
-- Status: planned/running.
-- Core idea: keep the high-scoring 005 fused package as the anchor, then test a stronger MemoryBank v2 with higher resolution, larger banks, and top-k nearest-neighbor scoring.
-- Planned packages: `results/_packages/006a_existing_memorybank_mask75_fusion_test_a.zip`, `results/_packages/006_dinov2_vitl14_memorybank_v2_test_a.zip`, and `results/_packages/006_dinov2_vitl14_memorybank_v2_fusion_test_a.zip`.
-- Key parameters: `--model dinov2_vitl14`, `--image-sizes 518,672,784`, `--scale-weights 0.25,0.35,0.40`, class/view bank `8192`, global/view bank `65536`, `--knn-neighbors 3`, `--knn-reducer mean_topk`, `--mask-low-percentile 70`, `--mask-high-percentile 99.7`.
-- Fusion idea: 006a reuses 005 raw with heavier MemoryBank mask weight; final 006 fuses 006 raw v2 with 005 fused using score weights `0.25 * 006_v2 + 0.75 * 005_fused` and mask weights `0.65 * 006_v2 + 0.35 * 005_fused`.
+- Official score: pending platform submission.
+- Commit: pending `Update experiment log for 006 MemoryBank v2 run`.
+- Core idea: keep the high-scoring 005 fused package as the anchor, then add a MemoryBank v2 branch with larger banks, top-3 mean nearest-neighbor scoring, and more aggressive mask normalization.
+- Low-cost backup package: `results/_packages/006a_existing_memorybank_mask75_fusion_test_a.zip`.
+- Raw fallback package: `results/_packages/006_dinov2_vitl14_memorybank_v2_fallback_518_672_test_a.zip`.
+- Recommended fused package: `results/_packages/006_dinov2_vitl14_memorybank_v2_fusion_test_a.zip`.
+- Full raw attempt: planned scales `518,672,784` with weights `0.25,0.35,0.40`; `518` and `672` completed, but the process exited at the start of the `784` bank stage without producing a full raw zip.
+- Final raw used for fusion: fallback scales `518,672` with normalized weights `0.42,0.58`, class/view bank `8192`, global/view bank `65536`, `--knn-neighbors 3`, `--knn-reducer mean_topk`, `--mask-low-percentile 70`, `--mask-high-percentile 99.7`.
+- Fusion: recommended 006 uses score weights `0.25 * 006_raw_fallback + 0.75 * 005_fused` and mask weights `0.65 * 006_raw_fallback + 0.35 * 005_fused`; 006a reuses 005 raw with mask weights `0.75 * memorybank + 0.25 * 004_fused`.
+- Runtime: raw fallback took about `1243.660s`; selected train/predict batch `96` for both scales; peak allocated/reserved CUDA memory about `13865.4MB / 15962.0MB`.
+- Validation: 006a, raw fallback, and recommended fused all passed `check_submission.py`; each zip contains 3751 entries, 3750 masks, and remote/local CRC checks passed.
+- Proxy checks: recommended fused has 750 finite scores, no NaN/Inf, 3750 readable `448x448` masks, and no all-black masks. Score correlation with 005 fused is about `0.985`; mask-mean correlation with 005 fused is about `0.940`, so this is a conservative fusion with a changed mask prior.
+- Delivery: recommended submit file is `006_dinov2_vitl14_memorybank_v2_fusion_test_a.zip`; backup zips and logs are in `提交结果/006_dinov2_vitl14_memorybank_v2_fusion_test_a/` on both the server and local workspace.
+- Lesson: top-k MemoryBank scoring gives a new signal but higher resolution `784` is fragile in this environment; cache metadata matching was also relaxed so future runs can reuse valid bank caches instead of rebuilding when extra derived metadata fields are present.

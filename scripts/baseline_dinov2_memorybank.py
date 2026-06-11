@@ -299,6 +299,10 @@ def save_memory_cache(bank: MemoryBank, args: argparse.Namespace) -> None:
     print(f"Saved memory cache: {path}", flush=True)
 
 
+def memory_cache_metadata_matches(meta: dict[str, object], expected: dict[str, object]) -> bool:
+    return all(meta.get(key) == value for key, value in expected.items())
+
+
 def load_memory_cache(args: argparse.Namespace, image_size: int, item_count: int) -> MemoryBank | None:
     path = memory_cache_path(args, image_size)
     if not args.cache_memory or not path.exists():
@@ -307,7 +311,7 @@ def load_memory_cache(args: argparse.Namespace, image_size: int, item_count: int
     try:
         with np.load(path, allow_pickle=False) as data:
             meta = json.loads(str(data["meta_json"]))
-            if meta != expected:
+            if not memory_cache_metadata_matches(meta, expected):
                 print(f"Memory cache metadata mismatch, rebuilding: {path}", flush=True)
                 print(f"expected={expected}", flush=True)
                 print(f"found={meta}", flush=True)
