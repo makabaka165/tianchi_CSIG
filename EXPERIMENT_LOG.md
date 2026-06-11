@@ -66,8 +66,8 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 006_dinov2_vitl14_memorybank_v2_fusion_test_a
 
-- Official score: pending platform submission.
-- Commit: pending `Update experiment log for 006 MemoryBank v2 run`.
+- Official score: fused `69.8682`; 006a `68.9152`; raw fallback not submitted.
+- Commit: `8e76a41 Update experiment log for 006 MemoryBank v2 run`.
 - Core idea: keep the high-scoring 005 fused package as the anchor, then add a MemoryBank v2 branch with larger banks, top-3 mean nearest-neighbor scoring, and more aggressive mask normalization.
 - Low-cost backup package: `results/_packages/006a_existing_memorybank_mask75_fusion_test_a.zip`.
 - Raw fallback package: `results/_packages/006_dinov2_vitl14_memorybank_v2_fallback_518_672_test_a.zip`.
@@ -80,3 +80,19 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 - Proxy checks: recommended fused has 750 finite scores, no NaN/Inf, 3750 readable `448x448` masks, and no all-black masks. Score correlation with 005 fused is about `0.985`; mask-mean correlation with 005 fused is about `0.940`, so this is a conservative fusion with a changed mask prior.
 - Delivery: recommended submit file is `006_dinov2_vitl14_memorybank_v2_fusion_test_a.zip`; backup zips and logs are in `提交结果/006_dinov2_vitl14_memorybank_v2_fusion_test_a/` on both the server and local workspace.
 - Lesson: top-k MemoryBank scoring gives a new signal but higher resolution `784` is fragile in this environment; cache metadata matching was also relaxed so future runs can reuse valid bank caches instead of rebuilding when extra derived metadata fields are present.
+- Feedback: 006a only changed mask weighting and dropped below both 006 fused and 005 fused, so the next direction should improve score ranking or add a new robust 784-safe branch instead of simply increasing old MemoryBank mask weight.
+
+## 007_dinov2_vitl14_memorybank_v2_784safe_fusion_test_a
+
+- Official score: pending platform submission.
+- Core idea: first sweep conservative fusions that reuse existing 006 raw fallback and 006 fused, then run a safer `784` MemoryBank v2 branch with lower workers, smaller KNN chunks, and lower batch candidates.
+- Sweep packages: `results/_packages/007s01_score30_mask55_fusion_test_a.zip`, `results/_packages/007s02_score35_mask50_fusion_test_a.zip`, `results/_packages/007s03_score20_mask65_fusion_test_a.zip`.
+- Raw package: `results/_packages/007_dinov2_vitl14_memorybank_v2_784safe_test_a.zip`.
+- Recommended fused package: `results/_packages/007_dinov2_vitl14_memorybank_v2_784safe_fusion_test_a.zip`.
+- Key parameters: `--image-sizes 518,672,784`, `--scale-weights 0.25,0.35,0.40`, class/view bank `8192`, global/view bank `65536`, `--knn-neighbors 3`, `--knn-reducer mean_topk`, `--knn-chunk-tokens 2048`, `--num-workers 8`, `--prefetch-factor 1`, batch candidates `16,24,32,40,48,64`.
+- Runtime: raw 784-safe completed all three scales in about `1019.419s`; `518/672` loaded existing bank caches, `784` built a new cache; selected train/predict batch `64` for every scale; peak allocated/reserved CUDA memory about `13154.6MB / 15228.0MB`.
+- Fusion: recommended 007 uses score weights `0.20 * 007_raw + 0.80 * 006_fused` and mask weights `0.50 * 007_raw + 0.50 * 006_fused`.
+- Validation: raw, recommended fused, and all three sweep packages passed `check_submission.py`; each zip contains 3751 entries, 3750 masks, and remote/local CRC checks passed.
+- Proxy checks: 007 raw score correlation with 006 fused is about `0.797`, so 784-safe adds a new ranking signal; recommended fused score correlation with 006 fused is about `0.995`, so it is intentionally conservative. All fused masks are readable `448x448` and non-black.
+- Delivery: recommended submit file is `007_dinov2_vitl14_memorybank_v2_784safe_fusion_test_a.zip`; raw and sweep zips are retained as backups in `????/007_dinov2_vitl14_memorybank_v2_784safe_fusion_test_a/` on both the server and local workspace.
+- Lesson: lowering workers, batch candidates, and KNN chunk size made `784` stable without sacrificing all GPU utilization; the next score step should compare official feedback from conservative 007 fused against a slightly more aggressive 007 sweep/raw submission before designing 008.
