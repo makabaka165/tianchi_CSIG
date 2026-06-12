@@ -84,7 +84,7 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 007_dinov2_vitl14_memorybank_v2_784safe_fusion_test_a
 
-- Official score: pending platform submission.
+- Official score: recommended fused `70.0345`; `007s02_score35_mask50_fusion_test_a.zip` scored `69.7332`.
 - Core idea: first sweep conservative fusions that reuse existing 006 raw fallback and 006 fused, then run a safer `784` MemoryBank v2 branch with lower workers, smaller KNN chunks, and lower batch candidates.
 - Sweep packages: `results/_packages/007s01_score30_mask55_fusion_test_a.zip`, `results/_packages/007s02_score35_mask50_fusion_test_a.zip`, `results/_packages/007s03_score20_mask65_fusion_test_a.zip`.
 - Raw package: `results/_packages/007_dinov2_vitl14_memorybank_v2_784safe_test_a.zip`.
@@ -96,3 +96,19 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 - Proxy checks: 007 raw score correlation with 006 fused is about `0.797`, so 784-safe adds a new ranking signal; recommended fused score correlation with 006 fused is about `0.995`, so it is intentionally conservative. All fused masks are readable `448x448` and non-black.
 - Delivery: recommended submit file is `007_dinov2_vitl14_memorybank_v2_784safe_fusion_test_a.zip`; raw and sweep zips are retained as backups in `????/007_dinov2_vitl14_memorybank_v2_784safe_fusion_test_a/` on both the server and local workspace.
 - Lesson: lowering workers, batch candidates, and KNN chunk size made `784` stable without sacrificing all GPU utilization; the next score step should compare official feedback from conservative 007 fused against a slightly more aggressive 007 sweep/raw submission before designing 008.
+- Feedback: 007 recommended fused is the current best; 007s02's more aggressive blend dropped below best, so 008 should keep 007 as the anchor and only add new raw MemoryBank signal conservatively.
+
+## 008_dinov2_vitl14_memorybank_dense_k5_fusion_test_a
+
+- Official score: pending platform submission.
+- Core idea: keep `007` recommended fused as the anchor, first run low-cost 007 raw/007 best fusion sweeps, then add a denser ViT-L/14 MemoryBank branch with larger banks and top-5 mean KNN at `518,672,784`.
+- Low-cost packages: `008a01_score10_mask30_fusion_test_a.zip`, `008a02_score15_mask40_fusion_test_a.zip`, `008a03_score20_mask45_fusion_test_a.zip`, `008a04_score25_mask50_fusion_test_a.zip`.
+- Raw dense package: `results/_packages/008_dinov2_vitl14_memorybank_dense_k5_test_a.zip`.
+- Recommended fused package: `results/_packages/008b02_score20_mask50_fusion_test_a.zip`; backups are `008b01_score15_mask40_fusion_test_a.zip` and `008b03_score25_mask55_fusion_test_a.zip`.
+- Key parameters: `--image-sizes 518,672,784`, `--scale-weights 0.20,0.35,0.45`, class/view bank `12288`, global/view bank `98304`, `--knn-neighbors 5`, `--knn-reducer mean_topk`, `--knn-chunk-tokens 2048`, `--mask-low-percentile 70`, `--mask-high-percentile 99.7`.
+- Runtime: raw dense elapsed `2282.687` seconds; selected train batch `{'518': 64, '672': 64, '784': 64}` and predict batch `{'518': 64, '672': 64, '784': 64}`; peak allocated/reserved CUDA memory `15474.6MB / 18014.0MB`.
+- Fusion: default recommendation uses score weights `0.20 * 008_dense + 0.80 * 007_best` and mask weights `0.50 * 008_dense + 0.50 * 007_best`.
+- Proxy checks: see `results/008_quality_summary.json`; all generated 008 zips passed format and CRC checks before delivery.
+- Delivery: recommended submit file is `008b02_score20_mask50_fusion_test_a.zip` under `????/008_dinov2_vitl14_memorybank_dense_k5_fusion_test_a/`.
+- Lesson: 008 tests whether more bank density and top-5 smoothing improve ranking beyond the stable 007 anchor; if official score falls, keep 007 as the current best and use 008 raw only as a future fusion component.
+
