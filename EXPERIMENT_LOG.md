@@ -100,7 +100,7 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 008_dinov2_vitl14_memorybank_dense_k5_fusion_test_a
 
-- Official score: pending platform submission.
+- Official score: recommended `008b02_score20_mask50_fusion_test_a.zip` scored `69.9960`, below current best `007` recommended `70.0345`.
 - Core idea: keep `007` recommended fused as the anchor, first run low-cost 007 raw/007 best fusion sweeps, then add a denser ViT-L/14 MemoryBank branch with larger banks and top-5 mean KNN at `518,672,784`.
 - Low-cost packages: `008a01_score10_mask30_fusion_test_a.zip`, `008a02_score15_mask40_fusion_test_a.zip`, `008a03_score20_mask45_fusion_test_a.zip`, `008a04_score25_mask50_fusion_test_a.zip`.
 - Raw dense package: `results/_packages/008_dinov2_vitl14_memorybank_dense_k5_test_a.zip`.
@@ -110,5 +110,21 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 - Fusion: default recommendation uses score weights `0.20 * 008_dense + 0.80 * 007_best` and mask weights `0.50 * 008_dense + 0.50 * 007_best`.
 - Proxy checks: see `results/008_quality_summary.json`; all generated 008 zips passed format and CRC checks before delivery.
 - Delivery: recommended submit file is `008b02_score20_mask50_fusion_test_a.zip` under `????/008_dinov2_vitl14_memorybank_dense_k5_fusion_test_a/`.
-- Lesson: 008 tests whether more bank density and top-5 smoothing improve ranking beyond the stable 007 anchor; if official score falls, keep 007 as the current best and use 008 raw only as a future fusion component.
+- Lesson: denser banks and top-5 smoothing produced a signal very close to 007 and did not improve official score, so the next step should add more complementary features instead of only increasing bank size or KNN `k`.
+- Feedback: 008 other packages are not priority submissions; 009 should keep 007 as the conservative anchor and try multi-layer DINOv2 patch features for better pixel localization.
 
+
+## 009_dinov2_vitl14_multilayer_memorybank_fusion_test_a
+
+- Official score: pending platform submission.
+- Core idea: build separate ViT-L/14 MemoryBanks for intermediate DINOv2 blocks `8,16,24` at scales `518,672,784`, fuse layer score maps, then use hflip TTA and conservative fusion with current best `007`.
+- Raw packages planned: `results/_packages/009_dinov2_vitl14_multilayer_memorybank_test_a.zip` and `results/_packages/009_dinov2_vitl14_multilayer_memorybank_hflip_test_a.zip`.
+- Fused packages planned: `009f01_multilayer_score15_mask45_fusion_test_a.zip`, `009f02_multilayer_hflip_score15_mask45_fusion_test_a.zip`, `009f03_multilayer_hflip_score20_mask55_fusion_test_a.zip`.
+- Key parameters: `--feature-layers 8,16,24`, `--layer-weights 0.30,0.35,0.35`, `--image-sizes 518,672,784`, `--scale-weights 0.25,0.35,0.40`, class/view bank `4096`, global/view bank `32768`, top-3 mean KNN, bf16 AMP, `--mask-low-percentile 70`, `--mask-high-percentile 99.7`.
+- Safety plan: if three layers at `784` OOM after auto-batch, retry with layers `16,24`; if hflip TTA looks abnormal, recommend non-TTA `009f01`.
+- Runtime: raw completed all three scales/layers in about `3159.918` seconds; hflip prediction reused all bank caches and took about `672.919` seconds. Selected train/predict batch was `{'518': 64, '672': 64, '784': 64}` / `{'518': 64, '672': 64, '784': 64}` for raw; hflip used the same batch choices.
+- GPU use: raw peak allocated/reserved CUDA memory about `16306.3MB / 18866.0MB`; hflip peak allocated/reserved about `16806.5MB / 19080.0MB`. Live `nvidia-smi` sampling reached `100%` util, about `19.6GB` memory, and about `436W` during 784 KNN.
+- Validation: raw, hflip raw, and all three fused packages passed `check_submission.py`; all package zips contain 3751 entries, 3750 masks, `submission.csv`, and `testzip()` returned `None`.
+- Proxy checks: see `results/009_quality_summary.json`; 009 raw/hflip score correlation with 007 best is about `0.792` / `0.772`, so the multilayer branch is meaningfully different. Recommended `009f02` stays conservative with score correlation about `0.996` and no bad/all-black masks.
+- Delivery: recommended submit file is `009f02_multilayer_hflip_score15_mask45_fusion_test_a.zip`; backups include `009f01`, `009f03`, raw, and hflip raw packages in `????/009_dinov2_vitl14_multilayer_memorybank_fusion_test_a/`.
+- Lesson: multi-layer DINOv2 MemoryBank runs fully on the 4090 without layer fallback and produces a more complementary ranking signal than the dense-k5 008 branch; because raw/hflip are quite different from 007, keep fusion weights conservative until official feedback arrives.
