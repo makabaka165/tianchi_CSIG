@@ -116,7 +116,7 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 
 ## 009_dinov2_vitl14_multilayer_memorybank_fusion_test_a
 
-- Official score: pending platform submission.
+- Official score: recommended `009f02_multilayer_hflip_score15_mask45_fusion_test_a.zip` scored `72.4612`; this is the current best before 010.
 - Core idea: build separate ViT-L/14 MemoryBanks for intermediate DINOv2 blocks `8,16,24` at scales `518,672,784`, fuse layer score maps, then use hflip TTA and conservative fusion with current best `007`.
 - Raw packages planned: `results/_packages/009_dinov2_vitl14_multilayer_memorybank_test_a.zip` and `results/_packages/009_dinov2_vitl14_multilayer_memorybank_hflip_test_a.zip`.
 - Fused packages planned: `009f01_multilayer_score15_mask45_fusion_test_a.zip`, `009f02_multilayer_hflip_score15_mask45_fusion_test_a.zip`, `009f03_multilayer_hflip_score20_mask55_fusion_test_a.zip`.
@@ -127,4 +127,20 @@ This file records the key ideas, commands, outputs, and leaderboard feedback for
 - Validation: raw, hflip raw, and all three fused packages passed `check_submission.py`; all package zips contain 3751 entries, 3750 masks, `submission.csv`, and `testzip()` returned `None`.
 - Proxy checks: see `results/009_quality_summary.json`; 009 raw/hflip score correlation with 007 best is about `0.792` / `0.772`, so the multilayer branch is meaningfully different. Recommended `009f02` stays conservative with score correlation about `0.996` and no bad/all-black masks.
 - Delivery: recommended submit file is `009f02_multilayer_hflip_score15_mask45_fusion_test_a.zip`; backups include `009f01`, `009f03`, raw, and hflip raw packages in `????/009_dinov2_vitl14_multilayer_memorybank_fusion_test_a/`.
-- Lesson: multi-layer DINOv2 MemoryBank runs fully on the 4090 without layer fallback and produces a more complementary ranking signal than the dense-k5 008 branch; because raw/hflip are quite different from 007, keep fusion weights conservative until official feedback arrives.
+- Lesson: multi-layer DINOv2 MemoryBank runs fully on the 4090 without layer fallback and produces a more complementary ranking signal than the dense-k5 008 branch. The official jump confirms that layer diversity and TTA are the strongest current direction; 010 should extend this with extra shallow/mid layers and stronger flip TTA, but keep fusion conservative around 009f02.
+
+## 010_dinov2_vitl14_5layer_hvflip_fusion_test_a
+
+- Official score: pending platform submission.
+- Core idea: extend the proven 009 multilayer MemoryBank branch from layers `8,16,24` to five layers `4,8,12,16,24`, add `hvflip` TTA, and fuse conservatively with current best `009f02 = 72.4612`.
+- Code changes: `baseline_dinov2_multilayer_memorybank.py` adds `vflip/hvflip` TTA; `scripts/repack_score_maps.py` can rebuild masks/CSV/zip from saved score-map caches for cheap postprocessing sweeps.
+- Low-cost 010a sweep: fuse 009 hflip raw back into 009f02 with score/mask weights `0.10/0.30`, `0.15/0.40`, and `0.20/0.50`; these are backup probes, not the main recommendation.
+- Raw/TTA plan: run `dinov2_vitl14` at scales `518,672,784` with weights `0.22,0.33,0.45`, layers `4,8,12,16,24`, layer weights `0.10,0.22,0.20,0.22,0.26`, class/view bank `4096`, global/view bank `32768`, top-3 mean KNN, and `--mask-low-percentile 70 --mask-high-percentile 99.7`.
+- Fusion plan: generate `010f01/010f02/010f03` by fusing 010 hvflip raw with 009f02; default recommendation is `010f02_5layer_hvflip_score15_mask45_fusion_test_a.zip`.
+- Safety: reuse existing 009 layer caches where metadata matches, build only missing `4/12` layer caches, and fall back to more conservative 010f weights if hvflip mask or score proxies look abnormal.
+- Runtime: raw elapsed `2610.714` seconds; hvflip elapsed `1387.012` seconds. Both selected train/predict batch `64` for all scales. Raw GPU sampling reached `22526.0` MB, `100%` util, and about `406.98` W; hvflip reached `22644.0` MB, `100%` util, and about `409.26` W.
+- Fallback: `518/672` used all five layers; at `784`, five-layer prediction hit CUDA OOM and automatically retried with layers `[8,12,16,24]`, keeping the new `L12` signal while dropping only shallow `L4` at the highest scale.
+- Validation: raw, hvflip raw, `010a01/02/03`, and `010f01/02/03` all passed `check_submission.py`; every zip has `submission.csv`, `3750` masks, `3751` total entries, and CRC `testzip()` passed.
+- Proxy checks: `010_hvflip_raw` score correlation with current best `009f02` is about `0.732`, more different than 010f fusion; recommended `010f02` stays conservative with score correlation about `0.997` and no bad/all-black masks.
+- Delivery: recommended submit file is `010f02_5layer_hvflip_score15_mask45_fusion_test_a.zip`; backups include `010f01`, `010f03`, raw, hvflip raw, and `010a` sweep packages.
+- Lesson: adding shallow/mid layers plus stronger TTA produces a distinct raw ranking signal and uses nearly the full 4090 memory budget. Because official gains have come from conservative anchoring, submit `010f02` first; `010f03` is the higher-risk backup if more platform attempts are available.

@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scale-weights", default="0.25,0.35,0.40")
     parser.add_argument("--feature-layers", default="8,16,24")
     parser.add_argument("--layer-weights", default="0.30,0.35,0.35")
-    parser.add_argument("--tta", choices=("none", "hflip"), default="none")
+    parser.add_argument("--tta", choices=("none", "hflip", "vflip", "hvflip"), default="none")
     parser.add_argument("--global-fallback", action="store_true")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--predict-batch-size", type=int, default=0)
@@ -532,22 +532,11 @@ def predict_scale_scores(
     for indices, images in tqdm(loader, desc=f"bank_test_{image_size}_multilayer_{args.tta}"):
         images = images.to(device, non_blocking=True)
         batch_items = [items[int(index)] for index in indices]
-        score_maps = score_images_for_layers(
-            model,
-            images,
-            batch_items,
-            banks,
-            gpu_banks,
-            feature_layers,
-            layer_weights,
-            args,
-            image_size,
-        )
-        if args.tta == "hflip":
-            flipped_images = torch.flip(images, dims=[3])
-            flipped_scores = score_images_for_layers(
+
+        def predict_augmented(image_batch: torch.Tensor) -> torch.Tensor:
+            return score_images_for_layers(
                 model,
-                flipped_images,
+                image_batch,
                 batch_items,
                 banks,
                 gpu_banks,
@@ -556,7 +545,21 @@ def predict_scale_scores(
                 args,
                 image_size,
             )
-            score_maps = 0.5 * (score_maps + torch.flip(flipped_scores, dims=[2]))
+
+        score_maps = predict_augmented(images)
+        if args.tta in {"hflip", "hvflip"}:
+            h_scores = predict_augmented(torch.flip(images, dims=[3]))
+            score_maps = score_maps + torch.flip(h_scores, dims=[2])
+        if args.tta in {"vflip", "hvflip"}:
+            v_scores = predict_augmented(torch.flip(images, dims=[2]))
+            score_maps = score_maps + torch.flip(v_scores, dims=[1])
+        if args.tta == "hvflip":
+            hv_scores = predict_augmented(torch.flip(images, dims=[2, 3]))
+            score_maps = score_maps + torch.flip(hv_scores, dims=[1, 2])
+        if args.tta == "hflip" or args.tta == "vflip":
+            score_maps = score_maps * 0.5
+        elif args.tta == "hvflip":
+            score_maps = score_maps * 0.25
         scale_scores[indices.numpy()] = score_maps.detach().cpu().numpy()
         processed += int(indices.numel())
 
